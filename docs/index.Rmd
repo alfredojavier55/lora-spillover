@@ -1,0 +1,1133 @@
+---
+title: "L'ORA - WG1 Working example Spillover (so)"
+author: "Alfredo Acosta SVA" 
+date: "`r Sys.Date()`" 
+output: 
+  html_document:
+    toc: yes
+    toc_float: true
+    theme: cosmo
+    fig_caption: yes
+    number_sections: yes
+    code_folding: show
+  html_notebook: 
+    toc: yes
+---
+# Working example SpillOver
+-The code use several datasets EMPRES-I (FAO), ECDC Surveillance Atlas ECDC, Global Health observatory (WHO). Adagio.
+-Please feel free to analyse the code and run from your terminal (there is a folder with the code and data on: DG1 Disease occurrence > datasources > Spill-over > sources > spillover.Rmd)
+
+# Libraries
+```{r}
+# Spill over analysis
+# Update: 17/01/2024
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(readr)
+library(data.table)
+library(plotly)
+library(DT)
+```
+# Working directory
+```{r}
+setwd("C:/Users/alfredo.acosta/SVA/LiRA_consortium - Documents/WG1 Disease occurrence/datasources/Spill-over/sources")
+
+```
+
+# Loading ECDC Surveillance atlas
+```{r}
+# West Nile 
+soe <- read.csv(file="ECDC_surveillance_data_West_Nile_virus_infection.csv")
+# Rabies
+soe1 <- read.csv(file="ECDC_surveillance_data_Rabies.csv")
+# Crimean congo
+soe2 <- read.csv(file="ECDC_surveillance_data_Crimean-Congo_haemorrhagic_fever.csv")
+# Rift Valley
+soe3 <- read.csv(file="ECDC_surveillance_data_Rift_valley_fever.csv")
+# Influenza
+# soe4 <- read.csv(file="ECDC_surveillance_data_Influenza.csv")
+
+soe <- rbind(soe, soe1, soe2, soe3)
+rm(soe1, soe2, soe3)
+
+soe1 <- soe %>% 
+    group_by(HealthTopic, RegionName,Time) %>%
+    summarise(cases=sum(NumValue)) %>% 
+  filter(cases != 0)
+
+colnames(soe1) <- c("disease", "country", "time", "cases")
+
+```
+# Descriptive
+```{r}
+# Number of human cases
+soe %>% 
+  filter(!str_detect(RegionName, "EU")) %>% 
+    group_by(HealthTopic) %>%
+  summarise(cases=sum(NumValue)) %>% 
+  filter(cases != 0)
+
+# Number of countries
+soe %>% 
+  filter(!str_detect(RegionName, "EU")) %>% 
+    group_by(HealthTopic) %>%
+  summarise(countries=length(unique(RegionName)))
+
+table(soe$Time)
+table(soe$Time, soe$HealthTopic)
+
+```
+# Loading Adagio database
+```{r}
+# Reading ADAGIO database
+adg <- read.csv(file= "Outbreaks and cases with labels.csv")
+str(adg)
+
+adg %>% 
+  filter(Disease == "West Nile Fever") %>% 
+  group_by(Country, FunctionalGroup,Species, Year) %>% 
+  summarize(cases=sum(SumCases))
+
+adg %>% 
+  filter(Disease == "West Nile Fever") %>% 
+  # group_by(Country, FunctionalGroup,Species, Year) %>% 
+  filter(Species != "Domesticated Equids") %>%
+  summarize(cases=sum(SumCases, na.rm = TRUE))
+
+# filtering cases by country without equids
+adg %>% 
+  filter(Disease == "West Nile Fever") %>% 
+  filter(Species != "Domesticated Equids") %>%
+  group_by(Country) %>% 
+  summarize(cases=sum(SumCases))
+
+
+```
+
+```{r}
+# West Nile animals cases to match human cases
+adg2  <- adg %>% 
+  filter(Species != "Domesticated Equids") %>%
+  mutate(Disease = gsub("West Nile Fever", "West Nile virus infection", Disease)) %>% 
+  # filter(Disease == "West Nile virus infection") %>% 
+  group_by(Country, Disease, Year) %>% 
+  summarize(cases=sum(SumCases))
+
+adg2
+
+sum(adg2$cases, na.rm = TRUE) #1720-915  #total 814 withouth equids
+
+```
+# Loading Human population
+```{r}
+hpop <- read_csv("API_SP.POP.TOTL_DS2_en_csv_v2_6508519.csv", skip = 3)
+hpop$`Country Name` <- gsub("Kosovo*","Kosovo", hpop$`Country Name`)
+
+colnames(hpop)
+hpop2 <- hpop[,c(1,48:66)]
+hpop2 <- melt(hpop2, id = 1)
+colnames(hpop2)
+```
+
+# Matrix with human population over the years
+```{r}
+# Create matrix
+db <-expand.grid(unique(hpop$`Country Name`), c(2003:2023), unique(soe1$disease))
+
+colnames(db) <- c("country", "time", "disease")
+
+# First index to pass the animal cases db & adg
+index <- match(paste(db$country, db$time, db$disease), paste(adg2$Country, adg2$Year, adg2$Disease))
+db$animal_c <- adg2$cases[index]
+
+# Second index to pass the human cases db & soe1
+index <- match(paste(db$country, db$time, db$disease), paste(soe1$country, soe1$time, soe1$disease))
+db$human_c <- soe1$cases[index]
+
+unique(db$disease)
+unique(soe1$disease)
+
+# third index to pass the human pop
+index <- match(paste(db$country, db$time), paste(hpop2$`Country Name`, hpop2$variable))
+db$human_pop <- hpop2$value[index]
+
+db %>% 
+  group_by(disease) %>%
+  summarise(casesAnimal=sum(animal_c, na.rm = TRUE),
+            casesHuman=sum(human_c, na.rm = TRUE))
+```
+
+## Human cases / 100.000 habitants
+```{r}
+db$human_cases_hab <- db$human_c/db$human_pop*100000
+```
+
+# Reading the UN regions
+```{r}
+unregions <- read.csv("all.csv")
+unregions$name[unregions$name == "United States of America"] <- "United States"
+unregions$name[unregions$name == "United Kingdom of Great Britain and Northern Ireland"] <- "United Kingdom"
+
+str(unregions)
+str(db)
+db$country <- as.character(db$country)
+db <- data.frame(db)
+db$unr <- unregions$sub.region[match(db$country, unregions$name)]
+
+```
+# Update H1N1 - RVF - JE FAO report 
+```{r}
+so <- read.csv(file="Latest Reported Events.csv") #spill-over: so
+so1 <- read.csv(file="Rift Valley fever (all).csv") #spill-over: so
+
+so$Serotype <- NULL
+so1$Location <- NULL
+
+colnames(so)[3] <- "lat"
+colnames(so)[4] <- "lon"
+colnames(so1)
+
+so1 <- so1[, c(1:9,13,17,15,16,14)]
+so <- rbind(so, so1)
+
+so$Country[so$Country == "U.K. of Great Britain and Northern Ireland"] <- "United Kingdom"
+so$Country[so$Country == "United States of America"] <- "United States"
+
+
+so$year <- year(ymd(substr(so$report.date, 1,10)) )
+
+# Region distribution for cases (lira interest)
+fao <- so %>% 
+  filter(!is.na(Humans.Affected)) %>% 
+  filter(Disease == "Influenza - Avian" |
+           Disease == "Rabies" | 
+           Disease == "Rift Valley fever") %>% 
+  group_by(country=Country, time=year, disease=Disease) %>% 
+  summarise(human_c=sum(Humans.Affected))
+
+fao_animal <- so %>% 
+  filter(is.na(Humans.Affected)) %>% 
+  filter(Disease == "Influenza - Avian" |
+           Disease == "Rabies" | 
+           Disease == "Rift Valley fever") %>% 
+  group_by(country=Country, time=year, disease=Disease) %>% 
+  summarise(animal_c=n())
+
+fao$animal_c <- fao_animal$animal_c[match(paste(fao$country, fao$time, fao$disease), paste(fao_animal$country, fao_animal$time, fao_animal$disease))]
+
+
+fao <- fao[,c(1,2,3,5,4)]
+
+
+colnames(db)
+colnames(fao)
+
+# Completing with population
+fao$human_pop <- hpop2$value[match(paste(fao$country, fao$time-2), paste(hpop2$`Country Name`, hpop2$variable))]
+fao$human_cases_hab <- fao$human_c/fao$human_pop*100000
+
+fao$unr <- unregions$sub.region[match(fao$country, unregions$name)]
+
+# Japanese encephalitis
+# https://www.who.int/data/gho/data/indicators/indicator-details/GHO/japanese-encephalitis---number-of-reported-cases
+so2 <- read.csv(file="FAO_JE.csv") #spill-over: so
+
+str(so2)
+
+so3 <- so2 %>% 
+  mutate(disease=gsub("Japanese encephalitis - number of reported cases", "Japanese encephalitis", Indicator)) %>%
+  mutate(animal_c= "0") %>% 
+  filter(Value != 0) %>% 
+  group_by(country=Location, time=Period, disease, animal_c) %>% 
+  summarise(human_c=sum(Value))
+
+# Completing with population
+so3$human_pop <- hpop2$value[match(paste(so3$country, so3$time), paste(hpop2$`Country Name`, hpop2$variable))]
+
+so3$human_cases_hab <- so3$human_c/so3$human_pop*100000
+
+so3$unr <- unregions$sub.region[match(so3$country, unregions$name)]
+
+colnames(db)
+colnames(so3)
+
+db <- rbind(db, fao, so3)
+
+```
+# General view on rate x 100.000 hab
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, group=country))+
+  geom_point()
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, group=country))+
+  geom_point()+
+  scale_y_log10()+
+  facet_wrap(vars(disease), ncol = 1)
+  
+```
+## West Nile Virus
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=country))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(country), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("WNV human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("WNV human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("WNF human cases / 100.000 habitants (by year-country)")
+```
+
+## Rabies
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("Rb human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=country))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(country), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("Rb human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("Rb human cases / 100.000 habitants (by year-country)")
+
+
+```
+
+## Rift valley fever
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rift valley fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("RVF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rift valley fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=country))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(country), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("RVF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rift valley fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("RVF human cases / 100.000 habitants (by year-country)")
+
+```
+
+## Crimean-Congo haemorrhagic fever
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Crimean-Congo haemorrhagic fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Crimean-Congo haemorrhagic fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=country))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(country), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Crimean-Congo haemorrhagic fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("CCHF human cases / 100.000 habitants (by year-country)")
+
+```
+## Influenza - Avian
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Influenza - Avian") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Influenza - Avian") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=country))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(country), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Influenza - Avian") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("CCHF human cases / 100.000 habitants (by year-country)")
+
+```
+
+## Japanese encephalitis
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Japanese encephalitis") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Japanese encephalitis") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=country))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(country), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Japanese encephalitis") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("CCHF human cases / 100.000 habitants (by year-country)")
+
+```
+# Ordering number of cases to check patterns 
+```{r}
+wnf <- db %>% 
+  group_by(country, disease) %>% 
+  filter(time > 2003) %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  summarise(mean_cases=mean(human_cases_hab)) %>% 
+  # mutate(level=cut(mean_cases, breaks = 3, labels = c(1,2,3))) %>% 
+  mutate(level=cut(mean_cases, breaks = 3)) %>% 
+  arrange(desc(level))
+
+dbw <- db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab))
+
+dbw$order <- wnf$mean_cases[match(dbw$country, wnf$country)]
+dbw$country <- reorder(dbw$country, dbw$order)
+ 
+dbw %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  ggplot(aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=0.1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), nrow = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("WNF human cases / 100.000 habitants (by year-country) ordered")
+```
+
+## Rabies ordering
+```{r}
+
+wnf <- db %>% 
+  group_by(country) %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  summarise(mean_cases=mean(human_cases_hab)) %>% 
+  # mutate(level=cut(mean_cases, breaks = 3, labels = c(1,2,3))) %>% 
+  mutate(level=cut(mean_cases, breaks = 3)) %>% 
+arrange(desc(level))
+
+
+dbw <- db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab))
+
+dbw$order <- wnf$mean_cases[match(dbw$country, wnf$country)]
+
+dbw$country <- reorder(dbw$country, dbw$order)
+ 
+
+  ggplot(dbw,aes(time, human_cases_hab, color=country))+
+  geom_point()+
+  geom_line(size=0.1)+
+  scale_y_log10()+
+  facet_wrap(vars(country), nrow = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("RB human cases / 100.000 habitants country ordered by the mean rate")
+
+```
+
+
+# General view of diseases spread
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  # filter(disease == "Rabies") %>% 
+  # filter(unr != "Western Asia") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time, color=disease))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(disease), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("human cases/100.000 habitants (log scaled) country rates")
+
+db %>% 
+  filter(time > 2003 & !is.na(human_cases_hab & !is.na(disease))) %>% 
+  # filter(disease == "Rabies") %>% 
+  # filter(!is.na(human_cases_hab)) %>% 
+  # filter(unr != "Western Asia") %>%
+  ggplot(aes(human_cases_hab, unr, group=unr, color=disease))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(disease), scales="free", ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("human cases/100.000 habitants (log scaled) country rates ")
+```
+# Calculating cut points and levels by disease
+```{r}
+level <- db %>% 
+  filter(time > 2003) %>%
+  # filter(!is.na(unr)) %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  group_by(disease) %>% 
+  mutate(name=cut(human_cases_hab, breaks = 3, labels = c("low","medium","high"))) %>% 
+  mutate(ranges=cut(human_cases_hab, breaks = 3)) %>% 
+  select(-unr, -animal_c)
+
+level2 <- level %>%  
+  group_by(disease,name,ranges) %>% 
+  dplyr::summarize(mean_point=median(human_cases_hab),
+                   human_cases_hab_unr=(sum(human_c)/sum(human_pop*100000)),
+                   mean2=mean(human_cases_hab_unr))
+
+# other option please consider and improve not yet usable because the breaks is static and we need to be disease specific
+to_break <- db %>% 
+  filter(time > 2003) %>%
+  filter(!is.na(unr)) %>% 
+  filter(!is.na(human_cases_hab))
+breaks <- quantile(to_break$human_cases_hab, c(0,0.25,0.75,1))
+breaks
+
+level <- to_break %>% 
+  group_by(disease,) %>% 
+  mutate(name=cut(human_cases_hab, breaks = breaks, labels = c("low","medium","high"))) %>% 
+  mutate(ranges=cut(human_cases_hab, breaks = breaks, right = FALSE)) %>% 
+  mutate(name2=cut(human_cases_hab, breaks = 3, labels = c("low","medium","high"))) %>% 
+  mutate(ranges2=cut(human_cases_hab, breaks = 3, right = FALSE)) %>% 
+  select(-unr, -animal_c)
+
+```
+
+# Using UN regions
+## West Nile Virus
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+   filter(!is.na(unr)) %>% 
+  ggplot(aes(human_cases_hab, color=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(unr), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("WNV human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  filter(!is.na(unr)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("WNV human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  filter(!is.na(unr)) %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("WNF human cases / 100.000 habitants (by year-country)")
+```
+
+## Rabies
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("Rb human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(unr), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("Rb human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("Rb human cases / 100.000 habitants (by year-country)")
+
+
+```
+
+## Rift valley fever
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rift valley fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("RVF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rift valley fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(unr), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("RVF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rift valley fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("RVF human cases / 100.000 habitants (by year-country)")
+
+```
+
+## Crimean-Congo haemorrhagic fever
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Crimean-Congo haemorrhagic fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Crimean-Congo haemorrhagic fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(unr), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Crimean-Congo haemorrhagic fever") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("CCHF human cases / 100.000 habitants (by year-unr)")
+
+```
+
+## Influenza - Avian
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Influenza - Avian") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Influenza - Avian") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(unr), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Influenza - Avian") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("CCHF human cases / 100.000 habitants (by year-unr)")
+
+```
+## Japanese encephalitis
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Japanese encephalitis") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, time, group=time))+
+  geom_boxplot()+
+  scale_x_log10()+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants (boxplot grouped by year)")+
+  ylab(NULL)
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Japanese encephalitis") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(unr), ncol = 1)+
+  theme_minimal() +
+  theme(legend.position="none")+
+  xlab("CCHF human cases / 100.000 habitants")+
+  ylab(NULL) + 
+  guides(y="none")
+
+db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Japanese encephalitis") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), ncol = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("CCHF human cases / 100.000 habitants (by year-unr)")
+
+```
+# Ordering to see patterns
+## WNV
+```{r}
+wnf <- db %>% 
+  group_by(unr, disease) %>% 
+  filter(time > 2003) %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  summarise(mean_cases=mean(human_cases_hab)) %>% 
+  # mutate(level=cut(mean_cases, breaks = 3, labels = c(1,2,3))) %>% 
+  mutate(level=cut(mean_cases, breaks = 3)) %>% 
+  arrange(desc(level))
+
+dbw <- db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  filter(!is.na(human_cases_hab))
+
+dbw$order <- wnf$mean_cases[match(dbw$unr, wnf$unr)]
+dbw$unr <- reorder(dbw$unr, dbw$order)
+ 
+dbw %>% 
+  filter(disease == "West Nile virus infection") %>% 
+  ggplot(aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=0.1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), nrow = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("WNF human cases / 100.000 habitants (by year-UNregion) ordered")
+```
+
+## Rabies
+```{r}
+
+wnf <- db %>% 
+  group_by(unr) %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  summarise(mean_cases=mean(human_cases_hab)) %>% 
+  # mutate(level=cut(mean_cases, breaks = 3, labels = c(1,2,3))) %>% 
+  mutate(level=cut(mean_cases, breaks = 3)) %>% 
+arrange(desc(level))
+
+
+dbw <- db %>% 
+  filter(time > 2003) %>% 
+  filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab))
+
+dbw$order <- wnf$mean_cases[match(dbw$unr, wnf$unr)]
+
+dbw$unr <- reorder(dbw$unr, dbw$order)
+ 
+
+  ggplot(dbw,aes(time, human_cases_hab, color=unr))+
+  geom_point()+
+  geom_line(size=0.1)+
+  scale_y_log10()+
+  facet_wrap(vars(unr), nrow = 3)+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("RB human cases / 100.000 habitants UNregion ordered by the mean rate")
+
+  
+
+```
+
+
+# General view of the rate by UNRegions
+```{r}
+UN_db <- db %>% 
+  group_by(disease, unr, time) %>% 
+  filter(time > 2003) %>% 
+  filter(unr != "Western Asia") %>% 
+  filter(!is.na(human_cases_hab)) %>%
+  summarise(human_cases_hab_unr=sum(human_c)/sum(human_pop)*100000)
+datatable(UN_db)
+
+ggplotly(UN_db %>% 
+  filter(time > 2003) %>% 
+  # filter(disease == "Rabies") %>% 
+  filter(!is.na(human_cases_hab_unr)) %>% 
+  ggplot(aes(human_cases_hab_unr, unr, group=unr, color=disease))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(disease), scales = "free", ncol=1) +
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("human cases / 100.000 habitants (boxplots of UNRegion rates) log scaled "))
+```
+
+# Calculating cut points and levels by disease and UNregions
+```{r}
+
+UNRegion_db <- db %>% 
+  group_by(disease, unr) %>% 
+  filter(time > 2003) %>% 
+  filter(unr != "Western Asia") %>% 
+  filter(!is.na(human_cases_hab)) %>%
+  summarise(human_cases_hab_unr=(sum(human_c)/sum(human_pop)*100000)) %>% 
+  mutate(name=cut(human_cases_hab_unr, breaks = 3, labels = c("low","medium","high"))) %>% 
+  mutate(range=cut(human_cases_hab_unr, breaks = 3))
+UNRegion_db
+
+
+UNRegion_db <- db %>% 
+  group_by(disease) %>% 
+  filter(time > 2003) %>% 
+  filter(unr != "Western Asia") %>% 
+  filter(!is.na(human_cases_hab)) %>%
+  summarise(human_cases_hab_unr=(sum(human_c)/sum(human_pop)*100000)) %>% 
+  mutate(name=cut(human_cases_hab_unr, breaks = 3, labels = c("low","medium","high"))) %>% 
+  mutate(range=cut(human_cases_hab_unr, breaks = 3))
+UNRegion_db
+
+```
+
+# General cut points by disease
+```{r}
+db %>% 
+  filter(time > 2003) %>% 
+  filter(!is.na(human_cases_hab)) %>% 
+  ggplot(aes(human_cases_hab, color=disease, group=unr))+
+  geom_boxplot()+
+  scale_x_log10()+
+  facet_wrap(vars(disease, unr))+
+  theme_minimal() +
+  theme(legend.position="none") +
+  ylab(NULL)+
+  xlab("human cases / 100.000 habitants (agregated by UNRegions and years)")
+
+```
+
+# Lira table - General cut points by disease values
+```{r}
+# lira_table_sp <- db %>%
+#   filter(time > 2003) %>%
+#   # filter(unr != "Western Asia") %>% 
+#   filter(!is.na(human_cases_hab)) %>%
+#   group_by(disease, UNregions=unr) %>%
+#   summarise(
+#     human_cases=sum(human_c),
+#     human_pop=sum(human_pop),
+#     # animal_cases=sum(animal_c),
+#     human_cases_hab_UNR=(sum(human_c)/sum(human_pop)*100000),
+#     CI05 = quantile(human_cases_hab, probs = 0.05, na.rm = TRUE),
+#     CI95 = quantile(human_cases_hab, probs = 0.95, na.rm = TRUE)) %>%
+#   mutate(level=cut(human_cases_hab_UNR, breaks = 3, labels = c("low","medium","high"))) %>% 
+#   arrange(disease, desc(human_cases_hab_UNR), UNregions)
+# 
+# lira_table_sp
+# write.csv(lira_table_sp, file="lira_table_sp.csv")
+
+```
+
+```{r}
+lira_table_sp <- db %>%
+  filter(time > 2003) %>%
+  # filter(unr != "Western Asia") %>% 
+  filter(!is.na(human_cases_hab)) %>%
+  group_by(disease, UNregions=unr) %>%
+  summarise(
+    human_cases=sum(human_c),
+    human_pop=sum(human_pop),
+    human_rate_mean=round(mean(human_cases_hab), 4),
+    CI05 = round(quantile(human_cases_hab, probs = 0.05, na.rm = TRUE), 4),
+    CI95 = round(quantile(human_cases_hab, probs = 0.95, na.rm = TRUE) , 4)) %>%
+  mutate(level=cut(human_rate_mean, breaks = 3, labels = c("low","medium","high"))) %>% 
+  arrange(disease, desc(human_rate_mean), UNregions)
+  
+datatable(lira_table_sp)
+```
+
+```{r}
+lira_table_sp2 <- db %>%
+  filter(time > 2003) %>%
+  # filter(unr != "Western Asia") %>% 
+  filter(!is.na(human_cases_hab)) %>%
+  group_by(disease, UNregions=unr) %>%
+  summarise(
+    human_cases=sum(human_c),
+    human_pop=sum(human_pop),
+    human_rate_median=round(median(human_cases_hab), 4),
+    CI05 = round(quantile(human_cases_hab, probs = 0.05, na.rm = TRUE), 4),
+    CI95 = round(quantile(human_cases_hab, probs = 0.95, na.rm = TRUE) ,4)) %>%
+  mutate(level=cut(human_rate_median, breaks = 3, labels = c("low","medium","high"))) %>% 
+  arrange(disease, desc(human_rate_median), UNregions)
+
+datatable(lira_table_sp2)
+```
+# Credits Acosta, Alfredo PhD<sup>1</sup>.
+**SVA<sup>1</sup>**: SVA <http://www.sva.se/>. 
